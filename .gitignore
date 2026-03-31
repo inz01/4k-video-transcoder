@@ -7,8 +7,10 @@ __pycache__/
 dist/
 build/
 
-# Environment
+# Environment (runtime-generated .env is ignored; VM-specific templates are tracked)
 .env
+!.env.vm1
+!.env.vm2
 
 # Runtime directories (large video files)
 uploads/

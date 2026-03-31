@@ -1,0 +1,41 @@
+# =============================================================================
+# transcoder-api.service — Systemd unit for 4K Video Transcoder API (VM-1)
+# =============================================================================
+# Installed by cloud-init on VM-1:
+#   cp systemd/transcoder-api.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now transcoder-api
+# =============================================================================
+
+[Unit]
+Description=4K Video Transcoder — FastAPI API Server
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/4k-video-transcoder
+EnvironmentFile=/home/ubuntu/4k-video-transcoder/.env
+
+# Ensure logs directory exists before starting
+ExecStartPre=/bin/mkdir -p /home/ubuntu/4k-video-transcoder/logs
+
+# Use env vars from .env for host and port (dynamic, not hardcoded)
+ExecStart=/bin/bash -c '/home/ubuntu/4k-video-transcoder/.venv/bin/uvicorn app.main:app --host ${API_HOST} --port ${API_PORT}'
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=append:/home/ubuntu/4k-video-transcoder/logs/api.log
+StandardError=append:/home/ubuntu/4k-video-transcoder/logs/api.log
+
+# Graceful shutdown
+TimeoutStopSec=10
+KillMode=mixed
+
+# File descriptor limit for production workloads
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

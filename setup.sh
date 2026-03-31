@@ -29,7 +29,7 @@ info "Linux detected."
 # ─── 2. Install system packages ───────────────────────────────────────────────
 section "Installing system packages (ffmpeg, redis-server, python3-venv)"
 sudo apt-get update -qq
-sudo apt-get install -y ffmpeg redis-server python3-venv python3-pip curl
+sudo apt-get install -y ffmpeg redis-server python3-venv python3-pip curl netcat-openbsd
 info "System packages installed."
 
 # ─── 3. Verify ffmpeg & ffprobe ───────────────────────────────────────────────
@@ -69,6 +69,28 @@ else
     warn "Redis not running via systemd. Starting manually..."
     redis-server --daemonize yes --logfile redis.log
     sleep 1
+fi
+
+# ─── 7b. Configure Redis for remote access (OpenStack multi-VM mode) ─────────
+# If .env contains REDIS_BIND_ALL=true (set in .env.vm1), reconfigure Redis
+# to listen on all interfaces so VM-2 worker can connect over the private network.
+if [[ -f ".env" ]]; then
+    REDIS_BIND_ALL=$(grep -oP '(?<=^REDIS_BIND_ALL=).*' .env 2>/dev/null || echo "false")
+    if [[ "$REDIS_BIND_ALL" == "true" ]]; then
+        section "Configuring Redis for remote access (multi-VM mode)"
+        REDIS_CONF=$(redis-cli INFO server 2>/dev/null | grep -oP '(?<=config_file:)\S+' || echo "/etc/redis/redis.conf")
+        if [[ -f "$REDIS_CONF" ]]; then
+            # Bind to all interfaces
+            sudo sed -i 's/^bind .*/bind 0.0.0.0/' "$REDIS_CONF"
+            # Disable protected mode so remote connections work
+            sudo sed -i 's/^protected-mode yes/protected-mode no/' "$REDIS_CONF"
+            sudo systemctl restart redis-server 2>/dev/null || sudo systemctl restart redis 2>/dev/null || true
+            sleep 1
+            info "Redis reconfigured: bind 0.0.0.0, protected-mode no"
+        else
+            warn "Redis config file not found at ${REDIS_CONF}. Manual Redis config may be needed."
+        fi
+    fi
 fi
 
 # Verify Redis connectivity

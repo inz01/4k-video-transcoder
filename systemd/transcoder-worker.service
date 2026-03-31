@@ -1,0 +1,44 @@
+# =============================================================================
+# transcoder-worker.service — Systemd unit for 4K Video Transcoder Worker (VM-2)
+# =============================================================================
+# Installed by cloud-init on VM-2:
+#   cp systemd/transcoder-worker.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now transcoder-worker
+# =============================================================================
+
+[Unit]
+Description=4K Video Transcoder — RQ Worker (FFmpeg)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/4k-video-transcoder
+EnvironmentFile=/home/ubuntu/4k-video-transcoder/.env
+
+# Ensure logs directory exists before starting
+ExecStartPre=/bin/mkdir -p /home/ubuntu/4k-video-transcoder/logs
+
+# Block until Redis on VM-1 is reachable (handles boot race condition)
+ExecStartPre=/bin/bash -c 'until nc -z ${REDIS_HOST} ${REDIS_PORT}; do sleep 2; done'
+
+# Run the RQ worker using the venv python
+ExecStart=/home/ubuntu/4k-video-transcoder/.venv/bin/python -m app.worker
+
+Restart=on-failure
+RestartSec=5
+
+StandardOutput=append:/home/ubuntu/4k-video-transcoder/logs/worker.log
+StandardError=append:/home/ubuntu/4k-video-transcoder/logs/worker.log
+
+# FFmpeg transcoding can be long-running — allow generous timeout
+TimeoutStopSec=30
+KillMode=mixed
+
+# File descriptor limit for FFmpeg scaling
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
