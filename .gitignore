@@ -1,0 +1,36 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Runtime directories (large video files)
+uploads/
+outputs/
+videos/
+storage/
+
+# Logs
+logs/
+*.log
+redis.log
+worker.log
+api.log
+
+# Metrics (generated at runtime)
+metrics/progress_*.json
+metrics/kpi_export.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
