@@ -165,7 +165,7 @@ fi
 # ─── 5. Write cloud-init scripts ──────────────────────────────────────────────
 section "Preparing cloud-init user-data scripts"
 
-# VM-1 user-data: installs app, copies .env.vm1, enables systemd API service
+# VM-1 user-data: installs app, copies .env.vm1 BEFORE setup, enables systemd API service
 cat > /tmp/vm1-userdata.sh <<'USERDATA'
 #!/bin/bash
 set -e
@@ -173,17 +173,18 @@ apt-get update -qq
 apt-get install -y git ffmpeg redis-server python3-venv python3-pip curl
 
 # Clone the repo
-# TODO: Create the repo first: gh repo create inz01/4k-video-transcoder --public
-#       then push from host: cd /path/to/project && git push -u origin main
 cd /home/ubuntu
 git clone https://github.com/inz01/4k-video-transcoder.git 4k-video-transcoder || true
 cd 4k-video-transcoder
 
-# Run setup (installs venv + deps + dirs)
-bash setup.sh
-
-# Use VM-1 env config
+# IMPORTANT: Copy VM-1 env config BEFORE running setup.sh
+# setup.sh section 7b reads .env for REDIS_BIND_ALL=true to configure Redis
+# for remote access (so VM-2 worker can connect over the private network).
+# If .env is not present, Redis will only bind to 127.0.0.1.
 cp .env.vm1 .env
+
+# Run setup (installs venv + deps + dirs + configures Redis for remote access)
+bash setup.sh
 
 # Install systemd service for API
 cp systemd/transcoder-api.service /etc/systemd/system/
@@ -203,17 +204,18 @@ apt-get update -qq
 apt-get install -y git ffmpeg python3-venv python3-pip curl
 
 # Clone the repo
-# TODO: Ensure repo exists at https://github.com/inz01/4k-video-transcoder before running
 cd /home/ubuntu
 git clone https://github.com/inz01/4k-video-transcoder.git 4k-video-transcoder || true
 cd 4k-video-transcoder
 
-# Run setup
-bash setup.sh
-
-# Use VM-2 env config — inject VM-1 private IP
+# IMPORTANT: Copy VM-2 env config BEFORE running setup.sh
+# This ensures setup.sh section 8 does not create a default .env
+# that would need to be overwritten afterwards.
 cp .env.vm2 .env
 sed -i "s/<VM1_PRIVATE_IP>/VM1_IP_PLACEHOLDER/" .env
+
+# Run setup (installs venv + deps + dirs)
+bash setup.sh
 
 # Install systemd service for worker
 cp systemd/transcoder-worker.service /etc/systemd/system/
@@ -296,9 +298,27 @@ info "VM-2 private IP: ${VM2_PRIVATE_IP}"
 # ─── 9. Update config.js with floating IP ────────────────────────────────────
 section "Updating config.js with VM-1 floating IP"
 if [[ -n "$FLOATING_IP" ]]; then
+    # Update local copy (for reference / local frontend use)
     sed -i "s|window.API_BASE = \"http://127.0.0.1:8000\"|window.API_BASE = \"http://${FLOATING_IP}:8000\"|" \
         "${REPO_DIR}/config.js"
-    info "config.js updated: API_BASE = http://${FLOATING_IP}:8000"
+    info "Local config.js updated: API_BASE = http://${FLOATING_IP}:8000"
+
+    # Update config.js on VM-1 so the frontend served by FastAPI uses the floating IP
+    # Wait for VM-1 cloud-init to finish (SSH may not be ready immediately)
+    info "Waiting for VM-1 SSH to become available..."
+    for i in $(seq 1 30); do
+        if ssh -i "${KEY_FILE}" -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            ubuntu@"${FLOATING_IP}" "echo ready" &>/dev/null; then
+            break
+        fi
+        sleep 10
+    done
+
+    ssh -i "${KEY_FILE}" -o StrictHostKeyChecking=no ubuntu@"${FLOATING_IP}" \
+        "cd /home/ubuntu/4k-video-transcoder && \
+         sed -i 's|window.API_BASE = \"http://127.0.0.1:8000\"|window.API_BASE = \"http://${FLOATING_IP}:8000\"|' config.js" \
+        && info "VM-1 config.js updated: API_BASE = http://${FLOATING_IP}:8000" \
+        || warn "Could not update config.js on VM-1 via SSH. Update manually after cloud-init completes."
 else
     warn "No floating IP available. Update config.js manually with VM-1's IP."
 fi

@@ -130,8 +130,8 @@ SERVICE_PASSWORD=${SERVICE_PASSWORD}
 # Host IP
 HOST_IP=${HOST_IP}
 
-# Branch — uses DEVSTACK_BRANCH variable set at top of this script
-OPENSTACK_BRANCHES=${DEVSTACK_BRANCH}
+# NOTE: DevStack automatically uses the branch it was cloned from (${DEVSTACK_BRANCH}).
+# No per-service branch override is needed for a single-branch deployment.
 
 # ── Core Services ─────────────────────────────────────────────────────────────
 # Compute
