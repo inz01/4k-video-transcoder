@@ -484,68 +484,221 @@ Run the same video on different configurations and record:
 ### Topology
 
 ```
-Internet
-    │
-    ▼
-[VM-1: API + Redis]  ←──── private network ────→  [VM-2: Worker]
-  - FastAPI :8000                                    - RQ Worker
-  - Redis   :6379 (internal only)                   - FFmpeg
-  - Floating IP (public)                            - No public IP needed
+Internet / Browser
+        │
+        ▼  HTTP :8000
+┌───────────────────────────┐
+│  VM-1: transcoder-api     │  ← Floating IP (public access)
+│  - FastAPI      :8000     │
+│  - Redis        :6379     │
+│  - NFS Server   :2049     │  ← exports uploads/ outputs/ metrics/
+└──────────┬────────────────┘
+           │ private network (10.10.0.0/24)
+           │ NFS mounts (NFSv4)
+           ▼
+┌───────────────────────────┐
+│  VM-2: transcoder-worker  │  ← No public IP
+│  - RQ Worker              │
+│  - FFmpeg                 │
+│  - NFS Client             │  ← mounts uploads/ outputs/ metrics/ from VM-1
+└───────────────────────────┘
 ```
 
-### VM-1 Setup (API + Redis)
+**Why NFS shared storage?**  
+The worker on VM-2 needs to read uploaded video files and write transcoded outputs.
+Without NFS, VM-2 would look for files in its own local filesystem and fail — uploaded
+files only exist on VM-1. NFS mounts VM-1's `uploads/`, `outputs/`, and `metrics/`
+directories onto VM-2 at the same paths, making the distributed setup transparent to
+the application code.
+
+---
+
+### Phase 1 — Install DevStack (Automated)
+
+Run on the **host machine** (not inside a VM):
 
 ```bash
-# SSH into VM-1
-ssh ubuntu@<VM1_FLOATING_IP>
-
-# Clone repo
-git clone <your-repo-url>
-cd 4k-video-transcoder
-
-# Run setup
-bash setup.sh
-
-# Start Redis (already done by setup.sh)
-# Start API
-bash start_api.sh &
+sudo bash devstack_install.sh
 ```
 
-### VM-2 Setup (Worker)
+**What it does:**
+1. Checks OS, disk space (≥60 GB), and RAM (≥8 GB)
+2. Installs prerequisites (git, python3, curl)
+3. Creates the `stack` user required by DevStack
+4. Clones DevStack (`stable/2024.2`) from OpenDev
+5. Auto-detects host IP and writes `local.conf`
+6. Pre-configures MySQL root auth for DevStack compatibility
+7. Runs `stack.sh` (takes 20–40 minutes)
+8. Verifies the installation
+
+> **Note:** The Ubuntu 22.04 cloud image (`jammy-server-cloudimg-amd64`) is
+> automatically downloaded by DevStack via `IMAGE_URLS` in `local.conf`.
+> You do **not** need to upload it manually.
+
+---
+
+### Phase 2 — Deploy App to OpenStack (Automated)
 
 ```bash
-# SSH into VM-2
-ssh ubuntu@<VM2_PRIVATE_IP>
+# Source OpenStack credentials first
+source /opt/stack/devstack/openrc admin admin
 
-# Clone repo
-git clone <your-repo-url>
-cd 4k-video-transcoder
-
-# Run setup (installs ffmpeg + venv + deps)
-bash setup.sh
-
-# Edit .env to point to VM-1's Redis
-sed -i "s/REDIS_HOST=localhost/REDIS_HOST=<VM1_PRIVATE_IP>/" .env
-
-# Start worker
-bash start_worker.sh &
+# Run from the project root directory
+bash openstack_deploy.sh
 ```
+
+**What it does:**
+1. Verifies OpenStack credentials
+2. Checks/uploads the Ubuntu 22.04 image to Glance
+3. Creates SSH keypair (`transcoder-key`)
+4. Creates private network `transcoder-net` (10.10.0.0/24) + router
+5. Creates security groups with all required rules (see table below)
+6. Launches VM-1 (`transcoder-api`) with cloud-init that:
+   - Installs app, Redis, NFS server
+   - Configures Redis for remote access
+   - Exports `uploads/`, `outputs/`, `metrics/` via NFS
+   - Starts `transcoder-api` systemd service
+7. Assigns a floating IP to VM-1
+8. Launches VM-2 (`transcoder-worker`) with cloud-init that:
+   - Installs app, FFmpeg, NFS client
+   - Waits for VM-1 NFS server to be ready
+   - Mounts VM-1's shared directories via NFSv4
+   - Persists mounts in `/etc/fstab`
+   - Starts `transcoder-worker` systemd service
+9. Updates `config.js` with the floating IP
+10. Verifies NFS mounts on VM-2
+
+---
+
+### Accessing the Application
+
+Once deployment completes (allow ~3 minutes for cloud-init):
+
+| Access Method | URL / Command |
+|---------------|---------------|
+| **Web UI (browser)** | `http://<FLOATING_IP>:8000/` |
+| **Health check** | `curl http://<FLOATING_IP>:8000/health` |
+| **SSH into VM-1** | `ssh -i ~/.ssh/transcoder-key ubuntu@<FLOATING_IP>` |
+| **SSH into VM-2** | `ssh -i ~/.ssh/transcoder-key -J ubuntu@<FLOATING_IP> ubuntu@<VM2_PRIVATE_IP>` |
+
+> Replace `<FLOATING_IP>` with the floating IP shown at the end of `openstack_deploy.sh`.
+> Example: `http://172.24.4.59:8000/`
+
+---
 
 ### OpenStack Security Groups
 
-| Rule | Direction | Port | Source |
-|------|-----------|------|--------|
-| API  | Ingress   | 8000 | 0.0.0.0/0 |
-| Redis | Ingress  | 6379 | VM-2 private IP only |
-| SSH  | Ingress   | 22   | your IP |
+**`transcoder-api-sg`** (VM-1):
 
-### Scale workers horizontally
+| Protocol | Port | Source | Purpose |
+|----------|------|--------|---------|
+| TCP | 22 | 0.0.0.0/0 | SSH access |
+| TCP | 8000 | 0.0.0.0/0 | FastAPI (public) |
+| TCP | 6379 | 10.10.0.0/24 | Redis (internal only) |
+| TCP | 2049 | 10.10.0.0/24 | NFS server (internal only) |
+| UDP | 2049 | 10.10.0.0/24 | NFS server (internal only) |
+| TCP | 111 | 10.10.0.0/24 | rpcbind (internal only) |
+| ICMP | — | 0.0.0.0/0 | Ping |
+
+**`transcoder-worker-sg`** (VM-2):
+
+| Protocol | Port | Source | Purpose |
+|----------|------|--------|---------|
+| TCP | 22 | 0.0.0.0/0 | SSH access |
+| ICMP | — | 0.0.0.0/0 | Ping |
+
+---
+
+### Manual VM-1 Setup (API + Redis + NFS Server)
 
 ```bash
-# On VM-2 (or VM-3), start additional workers:
+# SSH into VM-1
+ssh -i ~/.ssh/transcoder-key ubuntu@<FLOATING_IP>
+
+# Clone repo
+git clone https://github.com/inz01/4k-video-transcoder.git
+cd 4k-video-transcoder
+
+# Copy VM-1 env config BEFORE setup (enables Redis remote binding)
+cp .env.vm1 .env
+
+# Run setup (installs venv, deps, dirs, configures Redis)
+bash setup.sh
+
+# Set up NFS server
+sudo apt-get install -y nfs-kernel-server
+sudo tee /etc/exports <<EOF
+/home/ubuntu/4k-video-transcoder/uploads 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+/home/ubuntu/4k-video-transcoder/outputs 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+/home/ubuntu/4k-video-transcoder/metrics 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+EOF
+sudo exportfs -ra
+sudo systemctl enable --now nfs-kernel-server
+
+# Install and start API systemd service
+sudo cp systemd/transcoder-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now transcoder-api
+
+# Verify
+sudo systemctl status transcoder-api
+curl http://localhost:8000/health
+```
+
+---
+
+### Manual VM-2 Setup (Worker + NFS Client)
+
+```bash
+# SSH into VM-2 (via VM-1 jump host)
+ssh -i ~/.ssh/transcoder-key -J ubuntu@<FLOATING_IP> ubuntu@<VM2_PRIVATE_IP>
+
+# Clone repo
+git clone https://github.com/inz01/4k-video-transcoder.git
+cd 4k-video-transcoder
+
+# Copy VM-2 env config (points Redis to VM-1)
+cp .env.vm2 .env
+sed -i "s/<VM1_PRIVATE_IP>/<ACTUAL_VM1_PRIVATE_IP>/" .env
+
+# Run setup (installs venv, deps, dirs)
+bash setup.sh
+
+# Set up NFS client
+sudo apt-get install -y nfs-common
+
+# Wait for VM-1 NFS to be ready, then mount
+sudo mount -t nfs4 <VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/uploads  /home/ubuntu/4k-video-transcoder/uploads
+sudo mount -t nfs4 <VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/outputs  /home/ubuntu/4k-video-transcoder/outputs
+sudo mount -t nfs4 <VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/metrics  /home/ubuntu/4k-video-transcoder/metrics
+
+# Persist mounts
+echo "<VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/uploads  /home/ubuntu/4k-video-transcoder/uploads  nfs4  defaults,_netdev  0  0" | sudo tee -a /etc/fstab
+echo "<VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/outputs  /home/ubuntu/4k-video-transcoder/outputs  nfs4  defaults,_netdev  0  0" | sudo tee -a /etc/fstab
+echo "<VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/metrics  /home/ubuntu/4k-video-transcoder/metrics  nfs4  defaults,_netdev  0  0" | sudo tee -a /etc/fstab
+
+# Install and start worker systemd service
+sudo cp systemd/transcoder-worker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now transcoder-worker
+
+# Verify
+sudo systemctl status transcoder-worker
+mount | grep nfs
+```
+
+---
+
+### Scale Workers Horizontally
+
+```bash
+# Launch additional worker VMs (VM-3, VM-4, etc.) with the same setup as VM-2.
+# Each worker connects to the same Redis queue on VM-1 and mounts the same NFS shares.
+# No changes to VM-1 or the API are needed.
+
+# On each additional worker VM:
 bash start_worker.sh &
-bash start_worker.sh &
-# Each worker picks jobs from the same Redis queue
+# Each worker picks jobs from the same Redis queue on VM-1
 ```
 
 ---
@@ -613,6 +766,95 @@ cat metrics/progress_<job_id>.json
 cat metrics/jobs.jsonl | python3 -m json.tool
 # OR line by line:
 while IFS= read -r line; do echo "$line" | python3 -m json.tool; echo "---"; done < metrics/jobs.jsonl
+```
+
+### NFS mount fails on VM-2
+
+```bash
+# Check VM-1 NFS server is running
+ssh -i ~/.ssh/transcoder-key ubuntu@<FLOATING_IP> \
+    "sudo systemctl status nfs-kernel-server && sudo exportfs -v"
+
+# Check NFS security group rules exist on VM-1
+source /opt/stack/devstack/openrc admin admin
+openstack security group rule list transcoder-api-sg | grep -E "2049|111"
+
+# Manually retry mount on VM-2
+ssh -i ~/.ssh/transcoder-key -J ubuntu@<FLOATING_IP> ubuntu@<VM2_PRIVATE_IP>
+showmount -e <VM1_PRIVATE_IP>          # should list 3 exports
+sudo mount -t nfs4 <VM1_PRIVATE_IP>:/home/ubuntu/4k-video-transcoder/uploads \
+    /home/ubuntu/4k-video-transcoder/uploads
+```
+
+### Worker jobs fail with "file not found"
+
+This means NFS mounts are not active on VM-2. The worker cannot read uploaded files.
+
+```bash
+# On VM-2 — check mounts
+mount | grep nfs
+# If empty, remount:
+sudo mount -a
+
+# Verify the uploaded file is visible from VM-2
+ls /home/ubuntu/4k-video-transcoder/uploads/
+# Should show the same files as VM-1's uploads/ directory
+```
+
+### Redis connection refused from VM-2
+
+```bash
+# On VM-1 — check Redis is listening on all interfaces
+redis-cli config get bind
+# Should include 0.0.0.0 or the private IP
+
+# If only bound to 127.0.0.1, check .env has REDIS_BIND_ALL=true
+cat /home/ubuntu/4k-video-transcoder/.env
+
+# Manually reconfigure Redis
+sudo sed -i "s/bind 127.0.0.1/bind 0.0.0.0/" /etc/redis/redis.conf
+sudo systemctl restart redis-server
+
+# Verify from VM-2
+redis-cli -h <VM1_PRIVATE_IP> -p 6379 ping   # should return PONG
+```
+
+### API health check fails after deployment
+
+```bash
+# Wait 3–5 minutes for cloud-init to finish, then:
+ssh -i ~/.ssh/transcoder-key ubuntu@<FLOATING_IP>
+sudo cloud-init status
+cat /home/ubuntu/setup.log
+sudo systemctl status transcoder-api
+curl http://localhost:8000/health
+```
+
+### Check cloud-init setup logs
+
+```bash
+# VM-1 setup log
+ssh -i ~/.ssh/transcoder-key ubuntu@<FLOATING_IP> "cat /home/ubuntu/setup.log"
+
+# VM-2 setup log
+ssh -i ~/.ssh/transcoder-key -J ubuntu@<FLOATING_IP> ubuntu@<VM2_PRIVATE_IP> \
+    "cat /home/ubuntu/setup.log"
+```
+
+### Reset and redeploy VMs
+
+```bash
+source /opt/stack/devstack/openrc admin admin
+
+# Delete VMs
+openstack server delete transcoder-api transcoder-worker
+
+# Delete floating IPs
+openstack floating ip list
+openstack floating ip delete <id>
+
+# Re-run deployment
+bash openstack_deploy.sh
 ```
 
 ### Reset all data (clean slate)

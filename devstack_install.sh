@@ -48,13 +48,33 @@ DATABASE_PASSWORD="secret"
 RABBIT_PASSWORD="secret"
 SERVICE_PASSWORD="secret"
 
-# ─── 1. Check OS ──────────────────────────────────────────────────────────────
-section "Checking OS"
+# ─── 1. Check OS and system requirements ──────────────────────────────────────
+section "Checking OS and system requirements"
 if ! grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
     warn "This script is tested on Ubuntu 22.04. Proceeding anyway..."
 fi
 OS_VERSION=$(grep VERSION_ID /etc/os-release | cut -d= -f2 | tr -d '"')
 info "OS version: ${OS_VERSION}"
+
+# Check available disk space (DevStack needs at least 60 GB)
+AVAIL_GB=$(df / --output=avail -BG | tail -1 | tr -d 'G ')
+if [[ "$AVAIL_GB" -lt 40 ]]; then
+    error "Insufficient disk space: ${AVAIL_GB}GB available, 60GB recommended. Free up space and retry."
+elif [[ "$AVAIL_GB" -lt 60 ]]; then
+    warn "Low disk space: ${AVAIL_GB}GB available. 60GB recommended. Proceeding, but install may fail."
+else
+    info "Disk space OK: ${AVAIL_GB}GB available."
+fi
+
+# Check available RAM (DevStack needs at least 8 GB)
+AVAIL_RAM_GB=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo)
+if [[ "$AVAIL_RAM_GB" -lt 6 ]]; then
+    error "Insufficient RAM: ${AVAIL_RAM_GB}GB detected, 8GB minimum required."
+elif [[ "$AVAIL_RAM_GB" -lt 8 ]]; then
+    warn "Low RAM: ${AVAIL_RAM_GB}GB detected. 8GB recommended. Proceeding anyway."
+else
+    info "RAM OK: ${AVAIL_RAM_GB}GB available."
+fi
 
 # ─── 2. Install prerequisites ─────────────────────────────────────────────────
 section "Installing prerequisites"
@@ -113,6 +133,11 @@ sudo -u "${STACK_USER}" git clone \
 info "DevStack cloned to ${DEVSTACK_DIR}"
 
 # ─── 6. Write local.conf ──────────────────────────────────────────────────────
+# NOTE: The Ubuntu 22.04 cloud image (jammy-server-cloudimg-amd64) is automatically
+# downloaded by DevStack via the IMAGE_URLS setting below. You do NOT need to
+# manually upload it — DevStack handles this during stack.sh execution.
+# The image will appear in Glance as 'jammy-server-cloudimg-amd64' and is used
+# by openstack_deploy.sh (IMAGE_NAME="jammy-server-cloudimg-amd64").
 section "Writing DevStack local.conf"
 cat > "${DEVSTACK_DIR}/local.conf" <<EOF
 [[local|localrc]]
@@ -191,29 +216,72 @@ EOF
 chown "${STACK_USER}:${STACK_USER}" "${DEVSTACK_DIR}/local.conf"
 info "local.conf written to ${DEVSTACK_DIR}/local.conf"
 
-# ─── 6b. Pre-configure MySQL for Ubuntu 24.04 (Noble) ────────────────────────
-section "Pre-configuring MySQL for Ubuntu 24.04 compatibility"
-# Ubuntu 24.04 Noble uses auth_socket plugin for MySQL root by default.
-# DevStack's configure_database_mysql does:
-#   1. sudo mysqladmin -u root password secret   (works via socket)
-#   2. sudo mysql -uroot -psecret -h127.0.0.1    (FAILS — still auth_socket)
-# Fix: pre-install MySQL and switch root to mysql_native_password BEFORE stack.sh.
+# ─── 6b. Pre-configure MySQL for DevStack compatibility ──────────────────────
+section "Pre-configuring MySQL for DevStack"
+# DevStack expects to connect as root with password 'secret' via both socket
+# and TCP (127.0.0.1). This step ensures MySQL root is set up correctly
+# regardless of the current auth state (auth_socket, caching_sha2_password,
+# or mysql_native_password with an unknown password).
 info "Installing MySQL server (pre-install for auth fix)..."
 DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server 2>/dev/null || true
 info "Starting MySQL service..."
 systemctl start mysql 2>/dev/null || true
 sleep 3
-info "Disabling MySQL validate_password component (MySQL 8.0 rejects 'secret')..."
-# MySQL 8.0 on Ubuntu 24.04 installs validate_password component by default.
-# It rejects simple passwords like 'secret'. Uninstall it first.
+
+# Disable validate_password if present (MySQL 8.0 rejects simple passwords like 'secret')
+info "Disabling MySQL validate_password component if present..."
 mysql -u root -e "UNINSTALL COMPONENT 'file://component_validate_password';" 2>/dev/null || \
+    mysql -u root -psecret -e "UNINSTALL COMPONENT 'file://component_validate_password';" 2>/dev/null || \
     mysql -u root -e "SET GLOBAL validate_password.policy=LOW; SET GLOBAL validate_password.length=1;" 2>/dev/null || true
 
+# Strategy: Try multiple methods to set root password to 'secret' with mysql_native_password
+# Method 1: Direct root access (works if root uses auth_socket or has no password)
+# Method 2: Root with existing 'secret' password (works if already configured)
+# Method 3: debian-sys-maint fallback (works when root is locked out)
 info "Switching MySQL root to mysql_native_password (password: secret)..."
+MYSQL_ROOT_FIXED=false
+
+# Method 1: Try passwordless root (auth_socket)
 if mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'secret'; FLUSH PRIVILEGES;" 2>/dev/null; then
-    info "MySQL root auth pre-configured: mysql_native_password / secret ✓"
+    MYSQL_ROOT_FIXED=true
+    info "Method 1 (auth_socket): MySQL root configured ✓"
+fi
+
+# Method 2: Try root with 'secret' password (already configured from previous run)
+if [[ "$MYSQL_ROOT_FIXED" == "false" ]]; then
+    if mysql -u root -psecret -e "SELECT 1;" 2>/dev/null; then
+        MYSQL_ROOT_FIXED=true
+        info "Method 2 (existing password): MySQL root already configured ✓"
+    fi
+fi
+
+# Method 3: Use debian-sys-maint (Ubuntu maintenance user — always has access)
+if [[ "$MYSQL_ROOT_FIXED" == "false" ]]; then
+    if [[ -f /etc/mysql/debian.cnf ]]; then
+        DEBIAN_MAINT_PASS=$(grep -m1 "^password" /etc/mysql/debian.cnf | awk '{print $3}')
+        if [[ -n "$DEBIAN_MAINT_PASS" ]]; then
+            info "Method 3 (debian-sys-maint fallback): Attempting root password reset..."
+            if mysql -u debian-sys-maint -p"${DEBIAN_MAINT_PASS}" -e \
+                "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'secret'; FLUSH PRIVILEGES;" 2>/dev/null; then
+                MYSQL_ROOT_FIXED=true
+                info "Method 3 (debian-sys-maint): MySQL root configured ✓"
+            fi
+            # Also fix root@'%' if it exists
+            mysql -u debian-sys-maint -p"${DEBIAN_MAINT_PASS}" -e \
+                "ALTER USER IF EXISTS 'root'@'%' IDENTIFIED WITH mysql_native_password BY 'secret'; FLUSH PRIVILEGES;" 2>/dev/null || true
+        fi
+    fi
+fi
+
+if [[ "$MYSQL_ROOT_FIXED" == "true" ]]; then
+    # Verify TCP connection works (this is what DevStack actually uses)
+    if mysql -u root -psecret -h 127.0.0.1 -e "SELECT 1;" 2>/dev/null; then
+        info "MySQL root auth verified: socket + TCP both working ✓"
+    else
+        warn "MySQL socket auth works but TCP may not. DevStack will attempt its own fix."
+    fi
 else
-    warn "MySQL pre-config may have failed — DevStack will attempt its own setup."
+    warn "Could not pre-configure MySQL root. DevStack will attempt its own setup."
 fi
 
 # ─── 7. Run stack.sh ──────────────────────────────────────────────────────────

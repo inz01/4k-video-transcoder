@@ -44,7 +44,7 @@ VM2_NAME="transcoder-worker"
 FLAVOR_API="m1.medium"                   # 2 vCPU, 4GB RAM
 FLAVOR_WORKER="m1.large"                 # 4 vCPU, 8GB RAM
 
-IMAGE_NAME="ubuntu-22.04"                # Must match image uploaded to Glance
+IMAGE_NAME="jammy-server-cloudimg-amd64" # Must match image uploaded to Glance
 KEY_NAME="transcoder-key"                # SSH keypair name in OpenStack
 KEY_FILE="${HOME}/.ssh/transcoder-key"   # Local path for the private key
 
@@ -162,15 +162,37 @@ else
     info "Security group '${SECGROUP_WORKER}' created."
 fi
 
+# Add NFS rules to VM-1 security group (VM-2 mounts shared storage from VM-1)
+# These rules allow NFSv4 (port 2049 TCP/UDP) and rpcbind (port 111 TCP)
+# from within the private subnet only.
+section "Adding NFS security group rules to ${SECGROUP_API}"
+NFS_TCP_EXISTS=$(openstack security group rule list "${SECGROUP_API}" \
+    --format value -c "IP Protocol" -c "Port Range" -c "Remote IP Prefix" 2>/dev/null \
+    | grep "tcp.*2049.*${SUBNET_CIDR}" || true)
+if [[ -z "$NFS_TCP_EXISTS" ]]; then
+    openstack security group rule create "${SECGROUP_API}" \
+        --protocol tcp --dst-port 2049 --remote-ip "${SUBNET_CIDR}"
+    openstack security group rule create "${SECGROUP_API}" \
+        --protocol udp --dst-port 2049 --remote-ip "${SUBNET_CIDR}"
+    openstack security group rule create "${SECGROUP_API}" \
+        --protocol tcp --dst-port 111 --remote-ip "${SUBNET_CIDR}"
+    info "NFS rules added to '${SECGROUP_API}' (TCP/UDP 2049, TCP 111 from ${SUBNET_CIDR})."
+else
+    info "NFS rules already exist in '${SECGROUP_API}'."
+fi
+
 # ─── 5. Write cloud-init scripts ──────────────────────────────────────────────
 section "Preparing cloud-init user-data scripts"
 
 # VM-1 user-data: installs app, copies .env.vm1 BEFORE setup, enables systemd API service
+# Also sets up NFS server so VM-2 can mount uploads/outputs/metrics directories.
 cat > /tmp/vm1-userdata.sh <<'USERDATA'
 #!/bin/bash
 set -e
+exec > /home/ubuntu/setup.log 2>&1
+
 apt-get update -qq
-apt-get install -y git ffmpeg redis-server python3-venv python3-pip curl
+apt-get install -y git ffmpeg redis-server python3-venv python3-pip curl nfs-kernel-server
 
 # Clone the repo
 cd /home/ubuntu
@@ -186,6 +208,25 @@ cp .env.vm1 .env
 # Run setup (installs venv + deps + dirs + configures Redis for remote access)
 bash setup.sh
 
+# ── NFS Server Setup ──────────────────────────────────────────────────────────
+# Export uploads/, outputs/, and metrics/ so VM-2 worker can access them.
+# This solves the distributed filesystem problem: the worker on VM-2 needs
+# to read uploaded files and write transcoded outputs back to VM-1's storage.
+chown -R ubuntu:ubuntu /home/ubuntu/4k-video-transcoder/uploads \
+                        /home/ubuntu/4k-video-transcoder/outputs \
+                        /home/ubuntu/4k-video-transcoder/metrics
+
+cat > /etc/exports <<EOF
+/home/ubuntu/4k-video-transcoder/uploads 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+/home/ubuntu/4k-video-transcoder/outputs 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+/home/ubuntu/4k-video-transcoder/metrics 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)
+EOF
+
+exportfs -ra
+systemctl enable nfs-kernel-server
+systemctl restart nfs-kernel-server
+echo "NFS server started — exporting uploads, outputs, metrics" >> /home/ubuntu/setup.log
+
 # Install systemd service for API
 cp systemd/transcoder-api.service /etc/systemd/system/
 systemctl daemon-reload
@@ -195,13 +236,15 @@ systemctl start transcoder-api
 echo "VM-1 setup complete" >> /home/ubuntu/setup.log
 USERDATA
 
-# VM-2 user-data: installs app, injects VM-1 private IP, enables worker service
+# VM-2 user-data: installs app, injects VM-1 private IP, mounts NFS shares, enables worker service
 # VM1_PRIVATE_IP will be substituted after VM-1 is created
 cat > /tmp/vm2-userdata-template.sh <<'USERDATA'
 #!/bin/bash
 set -e
+exec > /home/ubuntu/setup.log 2>&1
+
 apt-get update -qq
-apt-get install -y git ffmpeg python3-venv python3-pip curl
+apt-get install -y git ffmpeg python3-venv python3-pip curl nfs-common
 
 # Clone the repo
 cd /home/ubuntu
@@ -216,6 +259,36 @@ sed -i "s/<VM1_PRIVATE_IP>/VM1_IP_PLACEHOLDER/" .env
 
 # Run setup (installs venv + deps + dirs)
 bash setup.sh
+
+# ── NFS Client Setup ──────────────────────────────────────────────────────────
+# Mount VM-1's shared directories so the worker can read uploaded files
+# and write transcoded outputs back to VM-1's storage.
+# Without this, the worker would look for files in its own local filesystem
+# and fail because uploaded files only exist on VM-1.
+echo "Waiting for VM-1 NFS server to become available..." >> /home/ubuntu/setup.log
+VM1_IP="VM1_IP_PLACEHOLDER"
+for i in $(seq 1 30); do
+    if showmount -e "${VM1_IP}" &>/dev/null 2>&1; then
+        echo "VM-1 NFS server is ready (attempt ${i})" >> /home/ubuntu/setup.log
+        break
+    fi
+    echo "Waiting for NFS... attempt ${i}/30" >> /home/ubuntu/setup.log
+    sleep 10
+done
+
+# Mount shared directories using NFSv4
+mount -t nfs4 "${VM1_IP}:/home/ubuntu/4k-video-transcoder/uploads"  /home/ubuntu/4k-video-transcoder/uploads
+mount -t nfs4 "${VM1_IP}:/home/ubuntu/4k-video-transcoder/outputs"  /home/ubuntu/4k-video-transcoder/outputs
+mount -t nfs4 "${VM1_IP}:/home/ubuntu/4k-video-transcoder/metrics"  /home/ubuntu/4k-video-transcoder/metrics
+
+# Persist NFS mounts across reboots
+cat >> /etc/fstab <<EOF
+${VM1_IP}:/home/ubuntu/4k-video-transcoder/uploads  /home/ubuntu/4k-video-transcoder/uploads  nfs4  defaults,_netdev  0  0
+${VM1_IP}:/home/ubuntu/4k-video-transcoder/outputs  /home/ubuntu/4k-video-transcoder/outputs  nfs4  defaults,_netdev  0  0
+${VM1_IP}:/home/ubuntu/4k-video-transcoder/metrics  /home/ubuntu/4k-video-transcoder/metrics  nfs4  defaults,_netdev  0  0
+EOF
+
+echo "NFS mounts active: uploads, outputs, metrics → ${VM1_IP}" >> /home/ubuntu/setup.log
 
 # Install systemd service for worker
 cp systemd/transcoder-worker.service /etc/systemd/system/
@@ -323,38 +396,78 @@ else
     warn "No floating IP available. Update config.js manually with VM-1's IP."
 fi
 
-# ─── 10. Cleanup temp files ───────────────────────────────────────────────────
+# ─── 10. Post-deployment NFS verification (optional, runs after SSH is ready) ─
+section "Verifying NFS shared storage on VM-2"
+if [[ -n "$FLOATING_IP" ]]; then
+    info "Waiting for VM-2 cloud-init to complete NFS mounts (up to 5 min)..."
+    NFS_OK=false
+    for i in $(seq 1 30); do
+        NFS_CHECK=$(ssh -i "${KEY_FILE}" -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+            -J ubuntu@"${FLOATING_IP}" ubuntu@"${VM2_PRIVATE_IP}" \
+            "mount | grep -c nfs4" 2>/dev/null || echo "0")
+        if [[ "$NFS_CHECK" -ge 3 ]]; then
+            NFS_OK=true
+            info "NFS mounts verified on VM-2 (${NFS_CHECK} mounts active) ✓"
+            break
+        fi
+        sleep 10
+    done
+    if [[ "$NFS_OK" == "false" ]]; then
+        warn "NFS mounts not yet confirmed on VM-2. Cloud-init may still be running."
+        warn "Check manually: ssh -i ${KEY_FILE} -J ubuntu@${FLOATING_IP} ubuntu@${VM2_PRIVATE_IP} 'mount | grep nfs'"
+    fi
+else
+    warn "No floating IP — skipping NFS verification. Check VM-2 manually."
+fi
+
+# ─── 11. Cleanup temp files ───────────────────────────────────────────────────
 rm -f /tmp/vm1-userdata.sh /tmp/vm2-userdata-template.sh /tmp/vm2-userdata.sh
 
-# ─── 11. Summary ─────────────────────────────────────────────────────────────
+# ─── 12. Summary ─────────────────────────────────────────────────────────────
 section "Deployment Complete"
 echo ""
 echo -e "${BOLD}Infrastructure Summary:${RESET}"
 echo ""
-echo "  VM-1 (API + Redis)"
+echo "  VM-1 (API + Redis + NFS Server)"
 echo "    Name        : ${VM1_NAME}"
 echo "    Private IP  : ${VM1_PRIVATE_IP}"
 echo "    Floating IP : ${FLOATING_IP:-N/A}"
 echo "    API URL     : http://${FLOATING_IP:-<floating-ip>}:${API_PORT}"
+echo "    NFS exports : uploads/, outputs/, metrics/ → ${SUBNET_CIDR}"
 echo ""
-echo "  VM-2 (Worker)"
+echo "  VM-2 (Worker + NFS Client)"
 echo "    Name        : ${VM2_NAME}"
 echo "    Private IP  : ${VM2_PRIVATE_IP}"
 echo "    Redis target: ${VM1_PRIVATE_IP}:${REDIS_PORT}"
+echo "    NFS mounts  : uploads/, outputs/, metrics/ ← ${VM1_PRIVATE_IP}"
 echo ""
-echo -e "${BOLD}Verify deployment:${RESET}"
+echo -e "${BOLD}Access the application:${RESET}"
 echo ""
-echo "  # Health check (wait ~2 min for cloud-init to finish):"
-echo "  curl http://${FLOATING_IP:-<floating-ip>}:${API_PORT}/health"
+echo "  Web UI (browser):"
+echo "    http://${FLOATING_IP:-<floating-ip>}:${API_PORT}/"
+echo ""
+echo "  Health check (wait ~3 min for cloud-init to finish):"
+echo "    curl http://${FLOATING_IP:-<floating-ip>}:${API_PORT}/health"
+echo ""
+echo -e "${BOLD}SSH access:${RESET}"
 echo ""
 echo "  # SSH into VM-1:"
 echo "  ssh -i ${KEY_FILE} ubuntu@${FLOATING_IP:-<floating-ip>}"
 echo ""
-echo "  # SSH into VM-2 (via VM-1):"
+echo "  # SSH into VM-2 (via VM-1 jump host):"
 echo "  ssh -i ${KEY_FILE} -J ubuntu@${FLOATING_IP:-<floating-ip>} ubuntu@${VM2_PRIVATE_IP}"
 echo ""
-echo -e "${BOLD}Frontend:${RESET}"
-echo "  Open index.html in your browser."
-echo "  config.js now points to: http://${FLOATING_IP:-<floating-ip>}:${API_PORT}"
+echo -e "${BOLD}Verify distributed setup:${RESET}"
 echo ""
-echo -e "${GREEN}OpenStack deployment finished.${RESET}"
+echo "  # Check NFS mounts on VM-2:"
+echo "  ssh -i ${KEY_FILE} -J ubuntu@${FLOATING_IP:-<floating-ip>} ubuntu@${VM2_PRIVATE_IP} 'mount | grep nfs'"
+echo ""
+echo "  # Check cloud-init logs:"
+echo "  ssh -i ${KEY_FILE} ubuntu@${FLOATING_IP:-<floating-ip>} 'cat /home/ubuntu/setup.log'"
+echo "  ssh -i ${KEY_FILE} -J ubuntu@${FLOATING_IP:-<floating-ip>} ubuntu@${VM2_PRIVATE_IP} 'cat /home/ubuntu/setup.log'"
+echo ""
+echo -e "${BOLD}Frontend:${RESET}"
+echo "  Open your browser and navigate to: http://${FLOATING_IP:-<floating-ip>}:${API_PORT}/"
+echo "  config.js is configured to point to: http://${FLOATING_IP:-<floating-ip>}:${API_PORT}"
+echo ""
+echo -e "${GREEN}OpenStack deployment finished successfully.${RESET}"

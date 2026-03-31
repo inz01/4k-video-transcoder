@@ -7,6 +7,10 @@ __pycache__/
 dist/
 build/
 
+# Generated convenience scripts (created by setup.sh — not needed in repo)
+start_api.sh
+start_worker.sh
+
 # Environment (runtime-generated .env is ignored; VM-specific templates are tracked)
 .env
 !.env.vm1
@@ -28,6 +32,7 @@ api.log
 # Metrics (generated at runtime)
 metrics/progress_*.json
 metrics/kpi_export.csv
+metrics/jobs.jsonl
 
 # OS
 .DS_Store
