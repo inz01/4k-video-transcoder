@@ -79,16 +79,15 @@ if [[ -f ".env" ]]; then
     if [[ "$REDIS_BIND_ALL" == "true" ]]; then
         section "Configuring Redis for remote access (multi-VM mode)"
         REDIS_CONF=$(redis-cli INFO server 2>/dev/null | grep -oP '(?<=config_file:)\S+' | tr -d '\r' || echo "/etc/redis/redis.conf")
-        if sudo test -f "$REDIS_CONF"; then
-            # Bind to all interfaces
-            sudo sed -i 's/^bind .*/bind 0.0.0.0/' "$REDIS_CONF"
-            # Disable protected mode so remote connections work
-            sudo sed -i 's/^protected-mode yes/protected-mode no/' "$REDIS_CONF"
+        # Attempt to reconfigure Redis; sudo is needed because /etc/redis/ is not world-readable.
+        # The script already uses sudo earlier (apt-get, systemctl), so credentials are cached.
+        if sudo sed -i 's/^bind .*/bind 0.0.0.0/' "$REDIS_CONF" 2>/dev/null && \
+           sudo sed -i 's/^protected-mode yes/protected-mode no/' "$REDIS_CONF" 2>/dev/null; then
             sudo systemctl restart redis-server 2>/dev/null || sudo systemctl restart redis 2>/dev/null || true
             sleep 1
             info "Redis reconfigured: bind 0.0.0.0, protected-mode no"
         else
-            warn "Redis config file not found at ${REDIS_CONF}. Manual Redis config may be needed."
+            warn "Could not modify Redis config at ${REDIS_CONF}. Manual Redis config may be needed."
         fi
     fi
 fi
