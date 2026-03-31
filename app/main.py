@@ -144,6 +144,27 @@ def get_job_metrics(job_id: str):
     return {"job_id": job_id, "metrics": matched}
 
 
+@app.get("/metrics")
+def get_all_metrics():
+    """Return all job metrics records from jobs.jsonl — used by kpi_compare.py."""
+    metrics_file = os.path.join(METRICS_DIR, "jobs.jsonl")
+    if not os.path.exists(metrics_file):
+        return {"records": [], "count": 0}
+
+    records = []
+    with open(metrics_file, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    return {"records": records, "count": len(records)}
+
+
 # ── Serve frontend static files ──────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 def serve_frontend():
