@@ -42,7 +42,7 @@ VM1_NAME="transcoder-api"
 VM2_NAME="transcoder-worker"
 
 FLAVOR_API="m1.medium"                   # 2 vCPU, 4GB RAM
-FLAVOR_WORKER="m1.large"                 # 4 vCPU, 8GB RAM
+FLAVOR_WORKER="m1.small"                 # 1 vCPU, 2GB RAM (reduced for resource-constrained hosts)
 
 IMAGE_NAME="jammy-server-cloudimg-amd64" # Must match image uploaded to Glance
 KEY_NAME="transcoder-key"                # SSH keypair name in OpenStack

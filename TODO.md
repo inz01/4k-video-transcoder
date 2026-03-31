@@ -1,31 +1,30 @@
-# TODO — Deployment Scripts & Hardcoded IP Cleanup
+# TODO — DevStack Reinstall + Cloud Deployment on Shahzaib's Machine
 
-## Completed
-- [x] Step 1: Audit all files for hardcoded IPs (`172.24.4.59`) and paths
-- [x] Step 2: Update `kpi_compare.py` — 3-tier auto-detection (env var → OpenStack CLI → fallback)
-- [x] Step 3: Update `kpi_report/index.html` — JS auto-detection for cloud link
-- [x] Step 4: Update `openstack_deploy.sh` — Step 11 post-deploy KPI config
-- [x] Step 5: Update `.gitignore` — ignore generated `kpi_report/*.png`
-- [x] Step 6: Create `cloud_check.sh` — post-deployment health check script
-- [x] Step 7: Verify all edge cases (env var, CLI, fallback, browser JS, gitignore)
-- [x] Step 8: Run `cloud_check.sh` — all checks passed ✓
+## Phase 1: Prepare Code
+- [ ] Step 1: Change worker flavor to m1.small in openstack_deploy.sh
+- [ ] Step 2: Git commit + push all changes to GitHub (origin/main)
 
-## Scripts Overview
+## Phase 2: Clean Remote Machine
+- [ ] Step 3: Stop local app processes (worker + API) on remote
+- [ ] Step 4: Delete existing OpenStack VMs, floating IPs, security groups, networks, keypairs
+- [ ] Step 5: Unstack + Clean DevStack on remote
 
-| Script | Purpose | When to Run |
-|--------|---------|-------------|
-| `devstack_install.sh` | Install OpenStack DevStack | Once (pre-deployment) |
-| `setup.sh` | Local dev environment setup | Once (local dev) |
-| `openstack_deploy.sh` | Deploy 2-VM cloud topology | After DevStack install |
-| `cloud_check.sh` | Verify cloud deployment health | Post-deployment / anytime |
-| `start_api.sh` | Start local API server | Local development |
-| `start_worker.sh` | Start local RQ worker | Local development |
-| `remote_install.sh` | One-command installer for any Linux machine | Remote deployment |
+## Phase 3: Fresh DevStack Install
+- [ ] Step 6: Pull latest repo on remote (git pull or re-clone)
+- [ ] Step 7: Run devstack_install.sh on remote (~20-40 min)
+- [ ] Step 8: Verify DevStack services are running
 
-## Deployment Workflow
-```
-1. sudo bash devstack_install.sh          # Install DevStack (20-40 min)
-2. source /opt/stack/devstack/openrc admin admin
-3. bash openstack_deploy.sh               # Deploy VMs + app
-4. bash cloud_check.sh                    # Verify everything works
-5. Open http://<FLOATING_IP>:8000/        # Access cloud app
+## Phase 4: Deploy App to DevStack Cloud
+- [ ] Step 9: Source openrc and run openstack_deploy.sh on remote
+- [ ] Step 10: Wait for cloud-init (~3 min), verify VMs are ACTIVE
+
+## Phase 5: Verify & Run
+- [ ] Step 11: Health check: curl http://<floating-ip>:8000/health
+- [ ] Step 12: SSH into VMs, check setup logs
+- [ ] Step 13: Verify NFS mounts on VM-2
+- [ ] Step 14: Access frontend via browser at http://<floating-ip>:8000/
+
+## Connection Details
+- SSH: `sshpass -p 'vbnm,vbnm,' ssh -o StrictHostKeyChecking=no shahzaib@100.81.231.113`
+- Remote repo: ~/4k-video-transcoder
+- DevStack: /opt/stack/devstack
