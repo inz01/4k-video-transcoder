@@ -154,6 +154,14 @@ def serve_frontend():
         return HTMLResponse(content=f.read())
 
 
+@app.get("/config.js")
+def serve_config():
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.js")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="config.js not found")
+    return FileResponse(path, media_type="application/javascript")
+
+
 @app.get("/script.js")
 def serve_script():
     path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "script.js")

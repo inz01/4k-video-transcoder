@@ -78,8 +78,8 @@ if [[ -f ".env" ]]; then
     REDIS_BIND_ALL=$(grep -oP '(?<=^REDIS_BIND_ALL=).*' .env 2>/dev/null || echo "false")
     if [[ "$REDIS_BIND_ALL" == "true" ]]; then
         section "Configuring Redis for remote access (multi-VM mode)"
-        REDIS_CONF=$(redis-cli INFO server 2>/dev/null | grep -oP '(?<=config_file:)\S+' || echo "/etc/redis/redis.conf")
-        if [[ -f "$REDIS_CONF" ]]; then
+        REDIS_CONF=$(redis-cli INFO server 2>/dev/null | grep -oP '(?<=config_file:)\S+' | tr -d '\r' || echo "/etc/redis/redis.conf")
+        if sudo test -f "$REDIS_CONF"; then
             # Bind to all interfaces
             sudo sed -i 's/^bind .*/bind 0.0.0.0/' "$REDIS_CONF"
             # Disable protected mode so remote connections work
