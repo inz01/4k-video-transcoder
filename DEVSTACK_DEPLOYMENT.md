@@ -206,7 +206,7 @@ bash openstack_deploy.sh
 6. Launches VM-1 (`m1.medium`: 2 vCPU, 4 GB) with cloud-init
 7. Allocates and assigns floating IP to VM-1
 8. Launches VM-2 (`m1.large`: 4 vCPU, 8 GB) with cloud-init
-9. Updates `config.js` with VM-1's floating IP automatically
+9. Waits for VM-1 SSH — `config.js` auto-detects the API URL (no manual update needed)
 
 ---
 
@@ -369,14 +369,15 @@ sudo systemctl enable transcoder-worker
 sudo systemctl start transcoder-worker
 ```
 
-### Step 12 — Update config.js with floating IP
+### Step 12 — Access the frontend
 
-On your local machine (project root):
-```bash
-# Edit config.js — replace the API_BASE line:
-# window.API_BASE = "http://<FLOATING_IP>:8000";
-nano config.js
+No `config.js` changes are needed. Open your browser and navigate to:
+
 ```
+http://<FLOATING_IP>:8000/
+```
+
+`config.js` automatically detects the floating IP from `window.location.hostname` and sets `API_BASE` to `http://<FLOATING_IP>:8000`.
 
 ---
 
@@ -384,12 +385,28 @@ nano config.js
 
 ### `config.js` — Frontend API endpoint
 
+`config.js` **auto-detects** the correct API base URL at runtime — no manual editing required:
+
 ```javascript
-window.API_BASE = "http://127.0.0.1:8000";        // local dev
-// window.API_BASE = "http://<FLOATING_IP>:8000";  // OpenStack
+(function () {
+    if (window.location.protocol === "file:") {
+        // Opened directly as a local file — API must be on localhost
+        window.API_BASE = "http://127.0.0.1:8000";
+    } else {
+        // Served from a web server — use the same host, port 8000
+        window.API_BASE = window.location.protocol + "//" + window.location.hostname + ":8000";
+    }
+    console.log("[config] API_BASE set to:", window.API_BASE);
+})();
 ```
 
-Edit this file to switch between local and OpenStack deployment.
+| Access method | Resolved `API_BASE` |
+|---|---|
+| Double-click `index.html` (local file) | `http://127.0.0.1:8000` |
+| Browser → `http://<FLOATING_IP>:8000/` | `http://<FLOATING_IP>:8000` |
+| Any other hostname/IP | Automatically uses that hostname + `:8000` |
+
+No manual IP changes are needed when switching between local and OpenStack deployments.
 
 ---
 

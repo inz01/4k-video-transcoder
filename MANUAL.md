@@ -191,8 +191,9 @@ curl http://127.0.0.1:8000/health
 5. Watch the real-time progress bar update
 6. Click **Download Video** when complete
 
-> **Note:** The API base URL is set to `http://127.0.0.1:8000` by default.  
-> For OpenStack deployment, set `window.API_BASE = "http://<VM1_IP>:8000"` before loading `script.js`.
+> **Note:** `config.js` auto-detects the correct API URL at runtime — no manual changes needed.  
+> Opening `index.html` as a local file uses `http://127.0.0.1:8000`.  
+> Accessing via browser at `http://<VM1_IP>:8000/` automatically uses `http://<VM1_IP>:8000`.
 
 ---
 
@@ -565,7 +566,7 @@ bash openstack_deploy.sh
    - Mounts VM-1's shared directories via NFSv4
    - Persists mounts in `/etc/fstab`
    - Starts `transcoder-worker` systemd service
-9. Updates `config.js` with the floating IP
+9. Waits for VM-1 SSH — `config.js` auto-detects the API URL (no manual update needed)
 10. Verifies NFS mounts on VM-2
 
 ---

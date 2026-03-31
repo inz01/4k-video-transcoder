@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>4K Video Transcoder — KPI Comparison Report</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --card: #1a1d27;
+            --border: #2a2d3a;
+            --text: #e0e0e0;
+            --muted: #8a8fa0;
+            --accent: #6c63ff;
+            --green: #4caf50;
+            --red: #ef5350;
+            --blue: #42a5f5;
+            --orange: #ffa726;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem;
+        }
+        header {
+            text-align: center;
+            padding: 2rem 0 1rem;
+            border-bottom: 2px solid var(--accent);
+            margin-bottom: 2rem;
+        }
+        header h1 {
+            font-size: 2rem;
+            color: #fff;
+            margin-bottom: 0.3rem;
+        }
+        header h1 span { color: var(--accent); }
+        header .subtitle {
+            color: var(--muted);
+            font-size: 1rem;
+        }
+        header .generated {
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+        }
+
+        /* Summary cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .summary-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.2rem;
+            text-align: center;
+        }
+        .summary-card .label {
+            font-size: 0.8rem;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.3rem;
+        }
+        .summary-card .value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        .summary-card .detail {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 0.2rem;
+        }
+        .winner-local { border-left: 4px solid var(--blue); }
+        .winner-cloud { border-left: 4px solid var(--orange); }
+
+        /* KPI comparison table */
+        .kpi-table-wrapper {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            overflow-x: auto;
+        }
+        .kpi-table-wrapper h2 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            color: #fff;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        th {
+            text-align: left;
+            padding: 0.7rem 1rem;
+            background: rgba(108, 99, 255, 0.1);
+            color: var(--accent);
+            font-weight: 600;
+            border-bottom: 2px solid var(--border);
+        }
+        td {
+            padding: 0.6rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+        tr:hover td { background: rgba(255,255,255,0.03); }
+        .val-local { color: var(--blue); font-weight: 600; }
+        .val-cloud { color: var(--orange); font-weight: 600; }
+        .winner-badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-local { background: rgba(66,165,245,0.15); color: var(--blue); }
+        .badge-cloud { background: rgba(255,167,38,0.15); color: var(--orange); }
+
+        /* Preset breakdown */
+        .preset-table th { font-size: 0.8rem; }
+        .preset-table td { font-size: 0.85rem; }
+        .env-local { color: var(--blue); }
+        .env-cloud { color: var(--orange); }
+
+        /* Chart sections */
+        .charts-section {
+            margin-bottom: 2rem;
+        }
+        .charts-section h2 {
+            font-size: 1.3rem;
+            color: #fff;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .chart-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+        }
+        .chart-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem;
+            text-align: center;
+        }
+        .chart-card h3 {
+            font-size: 1rem;
+            color: var(--muted);
+            margin-bottom: 0.8rem;
+        }
+        .chart-card img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        .chart-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        @media (max-width: 768px) {
+            .chart-row { grid-template-columns: 1fr; }
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 2rem 0 1rem;
+            color: var(--muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border);
+            margin-top: 2rem;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+
+        /* How to run section */
+        .howto {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .howto h2 {
+            font-size: 1.1rem;
+            color: #fff;
+            margin-bottom: 0.8rem;
+        }
+        .howto code {
+            background: rgba(108,99,255,0.15);
+            color: var(--accent);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+        .howto pre {
+            background: #12141c;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            overflow-x: auto;
+            font-size: 0.85rem;
+            color: var(--green);
+            margin: 0.5rem 0;
+        }
+        .howto ul { padding-left: 1.5rem; }
+        .howto li { margin-bottom: 0.4rem; color: var(--muted); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>4K Video <span>Transcoder</span> — KPI Report</h1>
+            <div class="subtitle">Local vs Cloud (OpenStack DevStack) Performance Comparison</div>
+            <div class="generated" id="gen-time"></div>
+        </header>
+
+        <!-- Summary Cards -->
+        <div class="summary-grid">
+            <div class="summary-card winner-cloud">
+                <div class="label">Avg Processing Time</div>
+                <div class="value">3.70s</div>
+                <div class="detail">Cloud ↓ vs Local 4.95s</div>
+            </div>
+            <div class="summary-card winner-cloud">
+                <div class="label">Avg End-to-End Latency</div>
+                <div class="value">3.78s</div>
+                <div class="detail">Cloud ↓ vs Local 5.36s</div>
+            </div>
+            <div class="summary-card winner-cloud">
+                <div class="label">Avg Queue Wait</div>
+                <div class="value">0.006s</div>
+                <div class="detail">Cloud ↓ vs Local 0.29s</div>
+            </div>
+            <div class="summary-card winner-local">
+                <div class="label">Avg Throughput</div>
+                <div class="value">28.9 j/m</div>
+                <div class="detail">Local ↑ vs Cloud 21.5 j/m</div>
+            </div>
+            <div class="summary-card winner-cloud">
+                <div class="label">Avg CPU Before</div>
+                <div class="value">13.4%</div>
+                <div class="detail">Cloud ↓ vs Local 48.3%</div>
+            </div>
+            <div class="summary-card winner-local">
+                <div class="label">Avg CPU After</div>
+                <div class="value">76.0%</div>
+                <div class="detail">Local ↓ vs Cloud 79.2%</div>
+            </div>
+        </div>
+
+        <!-- KPI Comparison Table -->
+        <div class="kpi-table-wrapper">
+            <h2>📊 KPI Comparison Summary</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Local</th>
+                        <th>Cloud</th>
+                        <th>Winner</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Avg Processing Time (s)</td>
+                        <td class="val-local">4.954</td>
+                        <td class="val-cloud">3.702</td>
+                        <td><span class="winner-badge badge-cloud">☁ Cloud</span></td>
+                    </tr>
+                    <tr>
+                        <td>Avg End-to-End Latency (s)</td>
+                        <td class="val-local">5.358</td>
+                        <td class="val-cloud">3.777</td>
+                        <td><span class="winner-badge badge-cloud">☁ Cloud</span></td>
+                    </tr>
+                    <tr>
+                        <td>Avg Queue Wait (s)</td>
+                        <td class="val-local">0.294</td>
+                        <td class="val-cloud">0.006</td>
+                        <td><span class="winner-badge badge-cloud">☁ Cloud</span></td>
+                    </tr>
+                    <tr>
+                        <td>Avg Throughput (jobs/min)</td>
+                        <td class="val-local">28.905</td>
+                        <td class="val-cloud">21.479</td>
+                        <td><span class="winner-badge badge-local">🖥 Local</span></td>
+                    </tr>
+                    <tr>
+                        <td>Avg CPU Before (%)</td>
+                        <td class="val-local">48.289</td>
+                        <td class="val-cloud">13.350</td>
+                        <td><span class="winner-badge badge-cloud">☁ Cloud</span></td>
+                    </tr>
+                    <tr>
+                        <td>Avg CPU After (%)</td>
+                        <td class="val-local">76.049</td>
+                        <td class="val-cloud">79.200</td>
+                        <td><span class="winner-badge badge-local">🖥 Local</span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Per-Preset Breakdown -->
+        <div class="kpi-table-wrapper">
+            <h2>📋 Per-Preset Breakdown</h2>
+            <table class="preset-table">
+                <thead>
+                    <tr>
+                        <th>Preset</th>
+                        <th>Env</th>
+                        <th>Jobs</th>
+                        <th>Proc (s)</th>
+                        <th>Latency (s)</th>
+                        <th>Throughput (j/m)</th>
+                        <th>CPU %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>480p</td>
+                        <td class="env-local">Local</td>
+                        <td>10</td>
+                        <td>1.253</td>
+                        <td>1.743</td>
+                        <td>50.016</td>
+                        <td>66.8</td>
+                    </tr>
+                    <tr>
+                        <td>480p</td>
+                        <td class="env-cloud">Cloud</td>
+                        <td>2</td>
+                        <td>2.073</td>
+                        <td>2.156</td>
+                        <td>29.236</td>
+                        <td>75.2</td>
+                    </tr>
+                    <tr>
+                        <td>720p</td>
+                        <td class="env-local">Local</td>
+                        <td>12</td>
+                        <td>2.160</td>
+                        <td>2.304</td>
+                        <td>32.289</td>
+                        <td>73.4</td>
+                    </tr>
+                    <tr>
+                        <td>720p</td>
+                        <td class="env-cloud">Cloud</td>
+                        <td>1</td>
+                        <td>3.071</td>
+                        <td>3.133</td>
+                        <td>19.540</td>
+                        <td>80.7</td>
+                    </tr>
+                    <tr>
+                        <td>1080p</td>
+                        <td class="env-local">Local</td>
+                        <td>10</td>
+                        <td>9.671</td>
+                        <td>9.988</td>
+                        <td>13.054</td>
+                        <td>84.2</td>
+                    </tr>
+                    <tr>
+                        <td>1080p</td>
+                        <td class="env-cloud">Cloud</td>
+                        <td>1</td>
+                        <td>7.591</td>
+                        <td>7.661</td>
+                        <td>7.904</td>
+                        <td>85.8</td>
+                    </tr>
+                    <tr>
+                        <td>4k</td>
+                        <td class="env-local">Local</td>
+                        <td>2</td>
+                        <td>18.023</td>
+                        <td>20.410</td>
+                        <td>3.331</td>
+                        <td>86.4</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Charts -->
+        <div class="charts-section">
+            <h2>📈 Visual Charts</h2>
+
+            <!-- Full-width summary -->
+            <div class="chart-grid" style="margin-bottom:1.5rem;">
+                <div class="chart-card">
+                    <h3>Summary Overview</h3>
+                    <img src="01_summary_overview.png" alt="Summary Overview Chart">
+                </div>
+            </div>
+
+            <!-- 2-column charts -->
+            <div class="chart-row" style="margin-bottom:1.5rem;">
+                <div class="chart-card">
+                    <h3>Processing Time by Preset</h3>
+                    <img src="02_processing_time.png" alt="Processing Time Chart">
+                </div>
+                <div class="chart-card">
+                    <h3>End-to-End Latency</h3>
+                    <img src="03_latency.png" alt="Latency Chart">
+                </div>
+            </div>
+
+            <div class="chart-row" style="margin-bottom:1.5rem;">
+                <div class="chart-card">
+                    <h3>Throughput (jobs/min)</h3>
+                    <img src="04_throughput.png" alt="Throughput Chart">
+                </div>
+                <div class="chart-card">
+                    <h3>Queue Wait Time</h3>
+                    <img src="05_queue_wait.png" alt="Queue Wait Chart">
+                </div>
+            </div>
+
+            <div class="chart-row" style="margin-bottom:1.5rem;">
+                <div class="chart-card">
+                    <h3>CPU Usage</h3>
+                    <img src="06_cpu_usage.png" alt="CPU Usage Chart">
+                </div>
+                <div class="chart-card">
+                    <h3>Job Timeline</h3>
+                    <img src="07_job_timeline.png" alt="Job Timeline Chart">
+                </div>
+            </div>
+        </div>
+
+        <!-- How to regenerate -->
+        <div class="howto">
+            <h2>🔄 How to Regenerate This Report</h2>
+            <p>Run the KPI comparison tool from the project root:</p>
+            <pre>source .venv/bin/activate
+
+# Cloud URL is auto-detected from OpenStack if credentials are sourced.
+# Or set it explicitly with --cloud-url:
+python kpi_compare.py \
+  --local-url http://127.0.0.1:8000 \
+  --run-tests \
+  --video videos/sample_video_1093662-hd_1920_1080_30fps.mp4 \
+  --presets 480p,720p,1080p \
+  --output kpi_report
+
+# To specify cloud URL manually:
+# python kpi_compare.py --cloud-url http://&lt;FLOATING_IP&gt;:8000 --run-tests ...</pre>
+            <ul>
+                <li>Charts are saved to <code>kpi_report/</code></li>
+                <li>Open <code>kpi_report/index.html</code> in your browser to view this dashboard</li>
+                <li>Use <code>--no-charts</code> for terminal-only output</li>
+                <li>Use <code>--local-file</code> / <code>--cloud-file</code> for offline JSONL input</li>
+            </ul>
+        </div>
+
+        <footer>
+            <p>4K Video Transcoder — KPI Comparison Dashboard</p>
+            <p>Local (bare-metal) vs Cloud (OpenStack DevStack) &middot; <a id="cloud-link" href="#" target="_blank">Cloud App UI</a></p>
+        </footer>
+    </div>
+
+    <script>
+        document.getElementById('gen-time').textContent =
+            'Report generated: ' + new Date().toLocaleString();
+
+        // Auto-detect cloud app link: if this page is served from the cloud VM,
+        // use the same host. Otherwise try reading from a known config file or
+        // leave as a placeholder that openstack_deploy.sh will patch.
+        (function() {
+            var link = document.getElementById('cloud-link');
+            if (link) {
+                // If served from a remote host (not file:// and not localhost),
+                // assume the cloud API is on the same host at port 8000
+                if (window.location.protocol !== 'file:' &&
+                    window.location.hostname !== 'localhost' &&
+                    window.location.hostname !== '127.0.0.1') {
+                    var cloudUrl = window.location.protocol + '//' + window.location.hostname + ':8000/';
+                    link.href = cloudUrl;
+                    link.textContent = 'Cloud App UI (' + window.location.hostname + ')';
+                } else {
+                    // Opened locally — show placeholder
+                    link.href = '#';
+                    link.textContent = 'Cloud App UI (deploy to get URL)';
+                    link.title = 'Run openstack_deploy.sh to get the cloud floating IP';
+                }
+            }
+        })();
+    </script>
+</body>
+</html>

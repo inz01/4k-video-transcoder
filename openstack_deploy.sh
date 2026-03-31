@@ -368,32 +368,30 @@ VM2_PRIVATE_IP=$(openstack server show "${VM2_NAME}" \
     -f value -c addresses | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
 info "VM-2 private IP: ${VM2_PRIVATE_IP}"
 
-# ─── 9. Update config.js with floating IP ────────────────────────────────────
-section "Updating config.js with VM-1 floating IP"
+# ─── 9. Wait for VM-1 SSH (config.js is now auto-detecting) ──────────────────
+section "Waiting for VM-1 SSH to become available"
+# config.js now auto-detects the correct API base URL at runtime — no manual
+# editing or sed patching is needed for any deployment target:
+#
+#   - Opened as file://  →  window.API_BASE = "http://127.0.0.1:8000"
+#   - Served via HTTP    →  window.API_BASE = protocol + "//" + hostname + ":8000"
+#
+# When the browser accesses the frontend at http://<FLOATING_IP>:8000/,
+# window.location.hostname is automatically the floating IP, so all API
+# calls go to http://<FLOATING_IP>:8000 without any config change.
 if [[ -n "$FLOATING_IP" ]]; then
-    # Update local copy (for reference / local frontend use)
-    sed -i "s|window.API_BASE = \"http://127.0.0.1:8000\"|window.API_BASE = \"http://${FLOATING_IP}:8000\"|" \
-        "${REPO_DIR}/config.js"
-    info "Local config.js updated: API_BASE = http://${FLOATING_IP}:8000"
-
-    # Update config.js on VM-1 so the frontend served by FastAPI uses the floating IP
-    # Wait for VM-1 cloud-init to finish (SSH may not be ready immediately)
-    info "Waiting for VM-1 SSH to become available..."
+    info "Waiting for VM-1 SSH (floating IP: ${FLOATING_IP})..."
     for i in $(seq 1 30); do
         if ssh -i "${KEY_FILE}" -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
             ubuntu@"${FLOATING_IP}" "echo ready" &>/dev/null; then
+            info "VM-1 SSH is ready ✓"
             break
         fi
         sleep 10
     done
-
-    ssh -i "${KEY_FILE}" -o StrictHostKeyChecking=no ubuntu@"${FLOATING_IP}" \
-        "cd /home/ubuntu/4k-video-transcoder && \
-         sed -i 's|window.API_BASE = \"http://127.0.0.1:8000\"|window.API_BASE = \"http://${FLOATING_IP}:8000\"|' config.js" \
-        && info "VM-1 config.js updated: API_BASE = http://${FLOATING_IP}:8000" \
-        || warn "Could not update config.js on VM-1 via SSH. Update manually after cloud-init completes."
+    info "Frontend will auto-detect API at: http://${FLOATING_IP}:8000"
 else
-    warn "No floating IP available. Update config.js manually with VM-1's IP."
+    warn "No floating IP available. Frontend will auto-detect API URL when accessed via browser."
 fi
 
 # ─── 10. Post-deployment NFS verification (optional, runs after SSH is ready) ─
@@ -420,10 +418,36 @@ else
     warn "No floating IP — skipping NFS verification. Check VM-2 manually."
 fi
 
-# ─── 11. Cleanup temp files ───────────────────────────────────────────────────
+# ─── 11. Post-deploy: set CLOUD_API_URL for kpi_compare.py ───────────────────
+section "Configuring KPI tools with cloud floating IP"
+if [[ -n "$FLOATING_IP" ]]; then
+    CLOUD_API_URL="http://${FLOATING_IP}:${API_PORT}"
+
+    # Write CLOUD_API_URL to .env so kpi_compare.py can auto-detect it
+    if [[ -f "${REPO_DIR}/.env" ]]; then
+        # Remove any existing CLOUD_API_URL line, then append
+        sed -i '/^CLOUD_API_URL=/d' "${REPO_DIR}/.env"
+        echo "CLOUD_API_URL=${CLOUD_API_URL}" >> "${REPO_DIR}/.env"
+        info "Added CLOUD_API_URL=${CLOUD_API_URL} to .env"
+    fi
+
+    # Patch kpi_report/index.html cloud link if the file exists
+    if [[ -f "${REPO_DIR}/kpi_report/index.html" ]]; then
+        sed -i "s|link.href = '#';|link.href = '${CLOUD_API_URL}/';|" \
+            "${REPO_DIR}/kpi_report/index.html" 2>/dev/null || true
+        info "Patched kpi_report/index.html with cloud URL: ${CLOUD_API_URL}"
+    fi
+
+    info "kpi_compare.py will auto-detect cloud URL from CLOUD_API_URL env var"
+    info "  Or run: python kpi_compare.py --cloud-url ${CLOUD_API_URL}"
+else
+    warn "No floating IP — kpi_compare.py will need --cloud-url set manually"
+fi
+
+# ─── 12. Cleanup temp files ───────────────────────────────────────────────────
 rm -f /tmp/vm1-userdata.sh /tmp/vm2-userdata-template.sh /tmp/vm2-userdata.sh
 
-# ─── 12. Summary ─────────────────────────────────────────────────────────────
+# ─── 13. Summary ─────────────────────────────────────────────────────────────
 section "Deployment Complete"
 echo ""
 echo -e "${BOLD}Infrastructure Summary:${RESET}"
@@ -468,6 +492,12 @@ echo "  ssh -i ${KEY_FILE} -J ubuntu@${FLOATING_IP:-<floating-ip>} ubuntu@${VM2_
 echo ""
 echo -e "${BOLD}Frontend:${RESET}"
 echo "  Open your browser and navigate to: http://${FLOATING_IP:-<floating-ip>}:${API_PORT}/"
-echo "  config.js is configured to point to: http://${FLOATING_IP:-<floating-ip>}:${API_PORT}"
+echo "  config.js auto-detects the API URL — no manual IP configuration needed."
+echo ""
+echo -e "${BOLD}KPI Comparison Tool:${RESET}"
+echo "  Cloud URL auto-detected. Run:"
+echo "    source .venv/bin/activate"
+echo "    export \$(grep -v '^#' .env | xargs)   # loads CLOUD_API_URL"
+echo "    python kpi_compare.py --run-tests --video videos/sample.mp4"
 echo ""
 echo -e "${GREEN}OpenStack deployment finished successfully.${RESET}"

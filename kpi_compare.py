@@ -493,6 +493,49 @@ def chart_job_timeline(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Auto-detect cloud floating IP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _auto_detect_cloud_url() -> str:
+    """Try to detect the cloud API URL from OpenStack floating IP or .env file.
+
+    Detection order:
+      1. CLOUD_API_URL environment variable (set by openstack_deploy.sh)
+      2. OpenStack CLI: ``openstack floating ip list`` (if credentials sourced)
+      3. Fallback: prompt user or use a safe default that will fail health check
+    """
+    import subprocess as _sp
+
+    # Method 1: Environment variable (set by openstack_deploy.sh post-deploy)
+    env_url = os.environ.get("CLOUD_API_URL")
+    if env_url:
+        print(f"  [AUTO] Cloud URL from CLOUD_API_URL env: {env_url}")
+        return env_url
+
+    # Method 2: OpenStack CLI
+    try:
+        result = _sp.run(
+            ["openstack", "floating", "ip", "list", "-f", "value", "-c", "Floating IP Address"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            ips = [ip.strip() for ip in result.stdout.strip().splitlines() if ip.strip()]
+            if ips:
+                cloud_ip = ips[0]
+                url = f"http://{cloud_ip}:8000"
+                print(f"  [AUTO] Cloud URL detected from OpenStack: {url}")
+                return url
+    except (FileNotFoundError, _sp.TimeoutExpired):
+        pass  # openstack CLI not available or timed out
+
+    # Method 3: Fallback
+    fallback = "http://localhost:8000"
+    print(f"  [WARN] Could not auto-detect cloud URL. Using fallback: {fallback}")
+    print(f"         Set --cloud-url or export CLOUD_API_URL to override.")
+    return fallback
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -504,8 +547,8 @@ def main() -> None:
     )
     parser.add_argument("--local-url",  default="http://127.0.0.1:8000",
                         help="Local API base URL (default: http://127.0.0.1:8000)")
-    parser.add_argument("--cloud-url",  default="http://172.24.4.59:8000",
-                        help="Cloud API base URL (default: http://172.24.4.59:8000)")
+    parser.add_argument("--cloud-url",  default=None,
+                        help="Cloud API base URL (auto-detected from OpenStack if not set)")
     parser.add_argument("--local-file", default=None,
                         help="Path to local jobs.jsonl (bypasses API)")
     parser.add_argument("--cloud-file", default=None,
@@ -521,6 +564,10 @@ def main() -> None:
     parser.add_argument("--no-charts",  action="store_true",
                         help="Skip chart generation (terminal table only)")
     args = parser.parse_args()
+
+    # ── Auto-detect cloud URL if not provided ─────────────────────────────────
+    if args.cloud_url is None:
+        args.cloud_url = _auto_detect_cloud_url()
 
     # ── Banner ────────────────────────────────────────────────────────────────
     print()
