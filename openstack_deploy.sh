@@ -92,6 +92,7 @@ if openstack keypair show "${KEY_NAME}" &>/dev/null; then
     info "Keypair '${KEY_NAME}' already exists."
 else
     mkdir -p "$(dirname ${KEY_FILE})"
+    rm -f "${KEY_FILE}" "${KEY_FILE}.pub"
     ssh-keygen -t rsa -b 4096 -f "${KEY_FILE}" -N "" -C "transcoder-deploy"
     openstack keypair create "${KEY_NAME}" --public-key "${KEY_FILE}.pub"
     info "Keypair '${KEY_NAME}' created. Private key: ${KEY_FILE}"
