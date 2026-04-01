@@ -191,6 +191,11 @@ cat > /tmp/vm1-userdata.sh <<'USERDATA'
 set -e
 exec > /home/ubuntu/setup.log 2>&1
 
+# ── SSH host key fix: Ubuntu cloud images may fail SSH on first boot ──────────
+# Regenerate missing host keys and restart SSH so the VM is reachable via SSH.
+ssh-keygen -A 2>/dev/null || true
+systemctl restart ssh 2>/dev/null || true
+
 apt-get update -qq
 apt-get install -y git ffmpeg redis-server python3-venv python3-pip curl nfs-kernel-server
 
@@ -242,6 +247,10 @@ cat > /tmp/vm2-userdata-template.sh <<'USERDATA'
 #!/bin/bash
 set -e
 exec > /home/ubuntu/setup.log 2>&1
+
+# ── SSH host key fix: Ubuntu cloud images may fail SSH on first boot ──────────
+ssh-keygen -A 2>/dev/null || true
+systemctl restart ssh 2>/dev/null || true
 
 apt-get update -qq
 apt-get install -y git ffmpeg python3-venv python3-pip curl nfs-common
