@@ -218,7 +218,8 @@ bash setup.sh
 # Export uploads/, outputs/, and metrics/ so VM-2 worker can access them.
 # This solves the distributed filesystem problem: the worker on VM-2 needs
 # to read uploaded files and write transcoded outputs back to VM-1's storage.
-chown -R ubuntu:ubuntu /home/ubuntu/4k-video-transcoder/uploads \
+chown -R ubuntu:ubuntu /home/ubuntu/4k-video-transcoder/logs \
+                        /home/ubuntu/4k-video-transcoder/uploads \
                         /home/ubuntu/4k-video-transcoder/outputs \
                         /home/ubuntu/4k-video-transcoder/metrics
 
@@ -278,7 +279,7 @@ bash setup.sh
 echo "Waiting for VM-1 NFS server to become available..." >> /home/ubuntu/setup.log
 VM1_IP="VM1_IP_PLACEHOLDER"
 for i in $(seq 1 30); do
-    if showmount -e "${VM1_IP}" &>/dev/null 2>&1; then
+    if nc -z "${VM1_IP}" 2049 &>/dev/null 2>&1; then
         echo "VM-1 NFS server is ready (attempt ${i})" >> /home/ubuntu/setup.log
         break
     fi
@@ -299,6 +300,12 @@ ${VM1_IP}:/home/ubuntu/4k-video-transcoder/metrics  /home/ubuntu/4k-video-transc
 EOF
 
 echo "NFS mounts active: uploads, outputs, metrics → ${VM1_IP}" >> /home/ubuntu/setup.log
+
+# Fix permissions so the worker service (running as ubuntu) can write to logs/
+chown -R ubuntu:ubuntu /home/ubuntu/4k-video-transcoder/logs \
+                        /home/ubuntu/4k-video-transcoder/uploads \
+                        /home/ubuntu/4k-video-transcoder/outputs \
+                        /home/ubuntu/4k-video-transcoder/metrics
 
 # Install systemd service for worker
 cp systemd/transcoder-worker.service /etc/systemd/system/
